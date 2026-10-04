@@ -48,7 +48,7 @@ func main() {
 		noMDNS   = flag.Bool("no-mdns", false, "mDNS 名（.local）を使わず IP の URL だけで動かす")
 		resetDev = flag.Bool("reset-devices", false, "登録済みの端末をすべて削除してから起動する")
 		monitorF = flag.String("monitor", "", "キャプチャするモニター（番号、DISPLAY4 のような名前、または virtual。省略時は仮想ディスプレイ→無ければプライマリ）")
-		keepDisp = flag.Bool("keep-display", false, "終了時に仮想ディスプレイを切断しない")
+		keepDisp = flag.Bool("keep-display", false, "終了時に仮想ディスプレイを無効化・切断しない")
 		listMon  = flag.Bool("list-monitors", false, "モニター一覧を表示して終了する")
 		noInput  = flag.Bool("no-input", false, "iPhone からの操作（タップ・ドラッグ・スクロール）を受け付けない")
 		noRotate = flag.Bool("no-rotate", false, "iPhone の向きに合わせて仮想モニターの縦横を切り替えない")
@@ -142,6 +142,7 @@ func run(o options) error {
 
 	// モニター（省略時・virtual 指定時は、切断中の仮想ディスプレイを先に接続する）
 	if o.monitor == "" || isVirtualSpec(o.monitor) {
+		enableVirtualIfNeeded()
 		attachVirtualIfNeeded()
 	}
 	mons, err := display.List()
@@ -193,7 +194,7 @@ func run(o options) error {
 
 	// 終了時に仮想ディスプレイを切断する（配信の停止後に実行されるよう、ここで defer する）
 	if display.IsVirtual(mon.DeviceName) && !o.keepDisplay {
-		defer func() { detachVirtual(currentMonitor().DeviceName) }()
+		defer func() { releaseVirtual(currentMonitor().DeviceName) }()
 	}
 
 	params := capture.Params{FPS: defaultFPS, BitrateKbps: defaultBitrate, KeyInterval: keyint}

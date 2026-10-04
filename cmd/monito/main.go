@@ -20,6 +20,7 @@ import (
 	"moni-to/internal/auth"
 	"moni-to/internal/capture"
 	"moni-to/internal/display"
+	"moni-to/internal/input"
 	"moni-to/internal/mdns"
 	"moni-to/internal/netutil"
 	"moni-to/internal/server"
@@ -45,6 +46,9 @@ func main() {
 		nameF    = flag.String("name", "", "mDNS のホスト名（.local は不要。省略時は monito-<PC名>）")
 		noMDNS   = flag.Bool("no-mdns", false, "mDNS 名（.local）を使わず IP の URL だけで動かす")
 		resetDev = flag.Bool("reset-devices", false, "登録済みの端末をすべて削除してから起動する")
+		monitorF = flag.String("monitor", "", "キャプチャするモニター（番号、または DISPLAY4 のような名前。省略時はプライマリ）")
+		listMon  = flag.Bool("list-monitors", false, "モニター一覧を表示して終了する")
+		noInput  = flag.Bool("no-input", false, "iPhone からの操作（タップ・ドラッグ・スクロール）を受け付けない")
 	)
 	flag.Parse()
 	log.SetFlags(log.Ltime)
@@ -52,8 +56,16 @@ func main() {
 	enableVT()
 	display.EnableDPIAwareness()
 
+	if *listMon {
+		if err := listMonitors(); err != nil {
+			fmt.Fprintln(os.Stderr, "エラー:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	opts := options{port: *port, ip: *ipFlag, keyint: *keyint, ffmpeg: *ffmpegF, encoder: *encoderF,
-		name: *nameF, noMDNS: *noMDNS, resetDevices: *resetDev}
+		name: *nameF, noMDNS: *noMDNS, resetDevices: *resetDev, monitor: *monitorF, noInput: *noInput}
 	if err := run(opts); err != nil {
 		fmt.Fprintln(os.Stderr, "\nエラー:", err)
 		os.Exit(1)
@@ -69,6 +81,21 @@ type options struct {
 	name         string
 	noMDNS       bool
 	resetDevices bool
+	monitor      string
+	noInput      bool
+}
+
+// listMonitors はモニター一覧を表示する。
+func listMonitors() error {
+	mons, err := display.List()
+	if err != nil {
+		return err
+	}
+	fmt.Println("モニター一覧（-monitor には番号か名前を指定します）:")
+	for _, m := range mons {
+		fmt.Println("  " + m.String())
+	}
+	return nil
 }
 
 func run(o options) error {
@@ -90,7 +117,7 @@ func run(o options) error {
 	}
 	log.Printf("FFmpeg: %s", ff)
 
-	// モニター（Phase 1 はプライマリ固定）
+	// モニター
 	mons, err := display.List()
 	if err != nil {
 		return err
@@ -100,7 +127,26 @@ func run(o options) error {
 		log.Printf("  %s", m)
 	}
 	mon := display.Primary(mons)
+	if o.monitor != "" {
+		if mon, err = display.Find(mons, o.monitor); err != nil {
+			return err
+		}
+	}
 	log.Printf("キャプチャ対象: %s", mon)
+
+	// 対象モニターの最新情報を返す。モニターの抜き差しや解像度変更で番号・座標が
+	// 変わっても追従できるよう、デバイス名（\.\DISPLAYn）で引き直す
+	var monMu sync.Mutex
+	currentMonitor := func() display.Monitor {
+		monMu.Lock()
+		defer monMu.Unlock()
+		if ms, err := display.List(); err == nil {
+			if m, ok := display.ByDeviceName(ms, mon.DeviceName); ok {
+				mon = m
+			}
+		}
+		return mon
+	}
 
 	params := capture.Params{FPS: defaultFPS, BitrateKbps: defaultBitrate, KeyInterval: keyint}
 
@@ -113,10 +159,21 @@ func run(o options) error {
 	}
 	log.Printf("使用エンコーダ: %s", enc.Name)
 
+	// 操作（タップ・ドラッグ・スクロール）
+	var inputHandler stream.InputHandler
+	if !o.noInput {
+		inputHandler = input.NewInjector(func() input.Rect {
+			m := currentMonitor()
+			return input.Rect{Left: m.Left, Top: m.Top, Right: m.Right, Bottom: m.Bottom}
+		})
+	} else {
+		log.Printf("操作の受け付けは無効です（-no-input）")
+	}
+
 	// WebRTC
 	streamer, err := stream.NewStreamer(lanIP, port, func() *capture.Capturer {
-		return &capture.Capturer{FFmpeg: ff, Encoder: enc, Monitor: mon, Params: params}
-	})
+		return &capture.Capturer{FFmpeg: ff, Encoder: enc, Monitor: currentMonitor(), Params: params}
+	}, inputHandler)
 	if err != nil {
 		return err
 	}

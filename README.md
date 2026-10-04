@@ -3,7 +3,7 @@
 Windows PC の画面を、同じ Wi-Fi 上の iPhone（Safari）へ WebRTC で低遅延ストリーミングするツールです。
 iPhone は標準カメラで QR コードを読み取るだけで接続できます。外部サーバーは使わず、LAN 内で完結します。
 
-> 現在の状態：**Phase 1（最小構成）** — プライマリモニターを配信し、QR で接続して映るところまで。
+> 現在の状態：**Phase 2** — モニター選択（仮想ディスプレイ対応）と、iPhone からのタッチ操作。
 
 ## 必要なもの
 
@@ -72,8 +72,35 @@ PowerShell の場合：
 | `-name` | `monito-<PC名>` | mDNS のホスト名（`.local` は付けない） |
 | `-no-mdns` | `false` | mDNS 名を使わず、IP の URL だけで動かす |
 | `-reset-devices` | `false` | 登録済みの端末をすべて削除してから起動する（iPhone を紛失したときなど） |
+| `-monitor` | プライマリ | キャプチャするモニター。番号（`-list-monitors` の左端）か名前（`DISPLAY4` など） |
+| `-list-monitors` | — | モニター一覧を表示して終了する |
+| `-no-input` | `false` | iPhone からの操作を受け付けない（見るだけにする） |
 
-Phase 1 では fps = 60、ビットレート = 10 Mbps、対象 = プライマリモニターで固定です（Phase 2・3 でフラグ化予定）。
+fps = 60、ビットレート = 10 Mbps は固定です（Phase 3 でフラグ化予定）。
+
+## iPhone を拡張ディスプレイにする（Virtual Display Driver）
+
+[Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver)（VDD）で仮想モニターを追加し、それを配信します。
+
+1. `winget install --id=VirtualDrivers.Virtual-Display-Driver -e` で取得し、同梱の **VDD Control を管理者として起動して「Install」**を押す
+   （winget だけではドライバ本体は入りません）
+2. `C:\VirtualDisplayDriverdd_settings.xml` の `<resolutions>` に iPhone の比率の解像度を追加する
+   （例：iPhone 18 Pro Max なら `1912x880`（画面の 2/3）または `2868x1320`（等倍））
+3. デバイスマネージャー →「ディスプレイ アダプター」→ Virtual Display Driver を無効化 → 有効化
+4. Windows の「設定 → ディスプレイ」で「表示画面を拡張する」にし、仮想モニターの解像度を 2 で追加したものにする
+5. `monito.exe -list-monitors` で番号を確認し、`monito.exe -monitor <番号>` で起動する
+
+## iPhone からの操作
+
+| 操作 | Windows 側の動作 |
+|---|---|
+| タップ | 左クリック |
+| ドラッグ（10px 以上動かす） | 左ボタンを押したまま移動 |
+| 長押し（0.5 秒） | 右クリック |
+| 2 本指で上下左右に動かす | スクロール（指の動きにページが追従する向き） |
+
+PC のブラウザで確認するときは、マウスで同じ操作ができます（右ボタンは右クリック、ホイールはスクロール）。
+座標は映像の表示領域（黒帯を除く）を基準に変換するので、iPhone の向きや比率が違ってもずれません。
 
 ## 認証の仕組み
 
@@ -98,6 +125,7 @@ internal/netutil/      LAN IP 検出
 internal/mdns/         mDNS 応答（monito-<PC名>.local）
 internal/auth/         トークン・端末鍵の管理
 internal/display/      DXGI によるモニター列挙（cgo なし）
+internal/input/        SendInput によるマウス操作と座標変換
 internal/capture/      FFmpeg の起動・エンコーダ自動選択・再起動
 internal/h264/         Annex-B の NAL 分割とフレーム単位へのまとめ
 internal/stream/       pion/webrtc の PeerConnection・PLI 処理
@@ -121,4 +149,6 @@ web/static/            クライアント（素の HTML/JS、exe に埋め込み
 - **ポート番号を変えるとホーム画面のアイコンは使えなくなります**（URL にポート番号が含まれるため）。
 - **ルーターによっては mDNS が届かない**ことがあります（有線と Wi-Fi の間でマルチキャストを中継しない機種、ゲスト Wi-Fi など）。その場合は IP の URL で動作します。
 - **FFmpeg を同梱して配布する場合のライセンス**：GPL ビルド（libx264 を含むもの）を同梱すると GPL の義務が生じます。配布用には LGPL ビルドが無難です（nvenc / qsv / amf は使用可能。libx264 は無いので GPU が無い環境では `h264_mf` を使用）。
+- **管理者権限のウィンドウが前面にあると、iPhone からの操作は効きません**（Windows の UIPI による制限。エラーにもならず無視されます）。操作したい場合は monito も管理者として起動してください。
+- 操作は指 1〜2 本まで（ピンチ操作、3 本指以上は未対応）。キーボード入力は未対応です。
 - `h264_qsv` / `h264_amf` / `h264_mf` は開発環境（NVIDIA GPU）では未検証です。

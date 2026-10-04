@@ -15,6 +15,7 @@ const actionBtn = document.getElementById('action');
 const SESSION_KEY = 'monito.session';
 let ws = null;
 let pc = null;
+let dc = null; // 操作イベント送信用 DataChannel
 let actionHandler = null;
 let halted = false; // 追い出し・認証エラー後は自動で再接続しない
 let homeTried = false; // mDNS 名への移動はページごとに 1 回だけ試す
@@ -62,6 +63,7 @@ function cleanup() {
     ws.close();
     ws = null;
   }
+  dc = null;
   if (pc) {
     pc.ontrack = null;
     pc.onconnectionstatechange = null;
@@ -177,6 +179,8 @@ async function moveToHome(sock, home) {
 async function startPeer(sock) {
   pc = new RTCPeerConnection({ iceServers: [] }); // LAN 内のみ（STUN/TURN なし）
   const tr = pc.addTransceiver('video', { direction: 'recvonly' });
+  // 操作イベント用。オファー作成前に作ると SDP にデータチャネルが含まれる
+  dc = pc.createDataChannel('input', { ordered: true });
   // H.264 を優先（ホスト側も H.264 しか出さない）
   if (tr.setCodecPreferences && RTCRtpReceiver.getCapabilities) {
     const caps = RTCRtpReceiver.getCapabilities('video');
@@ -228,6 +232,11 @@ function tryPlay() {
     });
   }
 }
+
+// 操作イベントを送る（接続していないときは捨てる）
+MonitoInput.attach(video, (ev) => {
+  if (dc && dc.readyState === 'open') dc.send(JSON.stringify(ev));
+});
 
 // 最初のフレームが表示されたらオーバーレイを消す
 video.addEventListener('playing', hide);

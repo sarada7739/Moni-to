@@ -57,11 +57,18 @@ func (c *Conn) Send(m Message) error {
 // Close は WebSocket を閉じる。
 func (c *Conn) Close() error { return c.ws.Close() }
 
+// InputHandler は DataChannel で届いた操作イベントを処理する。
+type InputHandler interface {
+	HandleJSON(b []byte)
+	ReleaseAll()
+}
+
 // Streamer は WebRTC API と現在の視聴者を保持する。
 type Streamer struct {
 	api        *webrtc.API
 	udp        net.PacketConn
 	newCapture func() *capture.Capturer
+	input      InputHandler // nil なら操作を受け付けない
 
 	mu  sync.Mutex
 	cur *viewer
@@ -69,8 +76,8 @@ type Streamer struct {
 }
 
 // NewStreamer は lanIP:port の UDP 1 ポートで WebRTC を待ち受ける Streamer を作る。
-// newCapture は視聴開始ごとに呼ばれ、新しい Capturer を返す。
-func NewStreamer(lanIP net.IP, port int, newCapture func() *capture.Capturer) (*Streamer, error) {
+// newCapture は視聴開始ごとに呼ばれ、新しい Capturer を返す。input は操作イベントの処理先。
+func NewStreamer(lanIP net.IP, port int, newCapture func() *capture.Capturer, input InputHandler) (*Streamer, error) {
 	m := &webrtc.MediaEngine{}
 	fb := []webrtc.RTCPFeedback{
 		{Type: "goog-remb"}, {Type: "ccm", Parameter: "fir"}, {Type: "nack"}, {Type: "nack", Parameter: "pli"},
@@ -108,7 +115,7 @@ func NewStreamer(lanIP net.IP, port int, newCapture func() *capture.Capturer) (*
 	se.SetICETimeouts(4*time.Second, 10*time.Second, time.Second)
 
 	api := webrtc.NewAPI(webrtc.WithMediaEngine(m), webrtc.WithInterceptorRegistry(ir), webrtc.WithSettingEngine(se))
-	return &Streamer{api: api, udp: udp, newCapture: newCapture}, nil
+	return &Streamer{api: api, udp: udp, newCapture: newCapture, input: input}, nil
 }
 
 // Close は現在の視聴者を切断し、UDP ポートを閉じる。
@@ -216,6 +223,21 @@ func (v *viewer) handleOffer(sdp string) error {
 	}
 	go v.readRTCP(sender)
 
+	// 操作イベント（タップ・ドラッグ・スクロール）はクライアントが作る DataChannel "input" で届く
+	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
+		if dc.Label() != "input" || v.s.input == nil {
+			return
+		}
+		dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+			v.mu.Lock()
+			active := !v.closed
+			v.mu.Unlock()
+			if active {
+				v.s.input.HandleJSON(msg.Data)
+			}
+		})
+		dc.OnClose(func() { v.s.input.ReleaseAll() })
+	})
 	pc.OnICEConnectionStateChange(func(st webrtc.ICEConnectionState) {
 		log.Printf("[viewer] ICE: %s", st)
 	})
@@ -319,6 +341,9 @@ func (v *viewer) close(reason string) {
 	}
 	if pc != nil {
 		pc.Close()
+	}
+	if v.s.input != nil {
+		v.s.input.ReleaseAll() // ドラッグ中に切断されてもボタンが押されたまま残らないように
 	}
 	v.conn.Close()
 }

@@ -7,6 +7,8 @@ package display
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 	"syscall"
 	"unsafe"
 
@@ -186,4 +188,34 @@ func EnableDPIAwareness() {
 		const perMonitorAwareV2 = ^uintptr(3) // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = (HANDLE)-4
 		proc.Call(perMonitorAwareV2)
 	}
+}
+
+// Find は -monitor の指定（番号、または DISPLAY4 / \.\DISPLAY4 のような名前）からモニターを探す。
+func Find(mons []Monitor, spec string) (Monitor, error) {
+	s := strings.TrimSpace(spec)
+	if n, err := strconv.Atoi(s); err == nil {
+		for _, m := range mons {
+			if m.Index == n {
+				return m, nil
+			}
+		}
+		return Monitor{}, fmt.Errorf("モニター番号 %d はありません（-list-monitors で確認してください）", n)
+	}
+	want := strings.ToUpper(strings.TrimPrefix(s, `\.\`))
+	for _, m := range mons {
+		if strings.ToUpper(strings.TrimPrefix(m.DeviceName, `\.\`)) == want {
+			return m, nil
+		}
+	}
+	return Monitor{}, fmt.Errorf("モニター %q が見つかりません（-list-monitors で確認してください）", spec)
+}
+
+// ByDeviceName は DeviceName が一致するモニターを探す（構成変更後の再解決用）。
+func ByDeviceName(mons []Monitor, name string) (Monitor, bool) {
+	for _, m := range mons {
+		if m.DeviceName == name {
+			return m, true
+		}
+	}
+	return Monitor{}, false
 }

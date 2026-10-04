@@ -50,6 +50,8 @@ func main() {
 		listMon  = flag.Bool("list-monitors", false, "モニター一覧を表示して終了する")
 		noInput  = flag.Bool("no-input", false, "iPhone からの操作（タップ・ドラッグ・スクロール）を受け付けない")
 		noRotate = flag.Bool("no-rotate", false, "iPhone の向きに合わせて仮想モニターの縦横を切り替えない")
+		scaleL   = flag.Int("scale-landscape", 200, "横向き時の仮想モニターの拡大率（%）。0 で変更しない")
+		scaleP   = flag.Int("scale-portrait", 125, "縦向き時の仮想モニターの拡大率（%）。0 で変更しない")
 	)
 	flag.Parse()
 	log.SetFlags(log.Ltime)
@@ -66,7 +68,8 @@ func main() {
 	}
 
 	opts := options{port: *port, ip: *ipFlag, keyint: *keyint, ffmpeg: *ffmpegF, encoder: *encoderF,
-		name: *nameF, noMDNS: *noMDNS, resetDevices: *resetDev, monitor: *monitorF, noInput: *noInput, noRotate: *noRotate}
+		name: *nameF, noMDNS: *noMDNS, resetDevices: *resetDev, monitor: *monitorF, noInput: *noInput, noRotate: *noRotate,
+		scaleLandscape: *scaleL, scalePortrait: *scaleP}
 	if err := run(opts); err != nil {
 		fmt.Fprintln(os.Stderr, "\nエラー:", err)
 		os.Exit(1)
@@ -85,6 +88,9 @@ type options struct {
 	monitor      string
 	noInput      bool
 	noRotate     bool
+
+	scaleLandscape int
+	scalePortrait  int
 }
 
 // listMonitors はモニター一覧を表示する。
@@ -104,6 +110,11 @@ func run(o options) error {
 	port, keyint := o.port, o.keyint
 	if keyint <= 0 {
 		return errors.New("-keyint には正の値を指定してください")
+	}
+	for name, v := range map[string]int{"-scale-landscape": o.scaleLandscape, "-scale-portrait": o.scalePortrait} {
+		if v != 0 && !display.ValidScale(v) {
+			return fmt.Errorf("%s には 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500 のいずれか（変更しない場合は 0）を指定してください", name)
+		}
 	}
 
 	// LAN IP の決定
@@ -196,24 +207,34 @@ func run(o options) error {
 			rotMu.Lock()
 			defer rotMu.Unlock()
 			dev := currentMonitor().DeviceName
+			dir, wantScale := "横向き", o.scaleLandscape
+			if portrait {
+				dir, wantScale = "縦向き", o.scalePortrait
+			}
 			changed, to, err := display.Orient(dev, portrait)
 			if err != nil {
 				log.Printf("[rotate] %v", err)
 				return
 			}
-			if !changed {
-				return
+			if changed {
+				log.Printf("[rotate] iPhone が%sになったため %s を %s に切り替えました", dir, dev, to)
+				time.Sleep(300 * time.Millisecond) // 表示モードの切り替えが落ち着くのを待つ
 			}
-			dir := "横向き"
-			if portrait {
-				dir = "縦向き"
+			// 拡大率は向きごとに変える（縦は幅が狭いので小さめにしないとアプリが収まらない）
+			if wantScale > 0 {
+				before, _ := display.Scale(dev)
+				if got, err := display.SetScale(dev, wantScale); err != nil {
+					log.Printf("[rotate] %v", err)
+				} else if got != before {
+					log.Printf("[rotate] %s の拡大率を %d%% → %d%% にしました（%s）", dev, before, got, dir)
+				}
 			}
-			log.Printf("[rotate] iPhone が%sになったため %s を %s に切り替えました", dir, dev, to)
-			time.Sleep(300 * time.Millisecond) // 表示モードの切り替えが落ち着くのを待つ
-			if injector != nil {
-				injector.Invalidate()
+			if changed {
+				if injector != nil {
+					injector.Invalidate()
+				}
+				streamer.RestartCapture()
 			}
-			streamer.RestartCapture()
 		}
 	}
 

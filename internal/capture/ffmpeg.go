@@ -31,10 +31,17 @@ type Capturer struct {
 	lastIDR     time.Time
 	lastRestart time.Time
 	lastSample  time.Time
+	kick        chan struct{} // 再起動待ちを打ち切る
 }
 
 // Run は ctx が終わるまで FFmpeg を動かし続ける（異常終了時は再起動する）。
 func (c *Capturer) Run(ctx context.Context) {
+	c.mu.Lock()
+	if c.kick == nil {
+		c.kick = make(chan struct{}, 1)
+	}
+	kick := c.kick
+	c.mu.Unlock()
 	backoff := time.Second
 	for ctx.Err() == nil {
 		frames, err := c.runOnce(ctx)
@@ -56,6 +63,7 @@ func (c *Capturer) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-time.After(backoff):
+		case <-kick: // Restart が呼ばれたら待たずに再起動する
 		}
 		if backoff < 5*time.Second {
 			backoff *= 2
@@ -155,6 +163,25 @@ func (c *Capturer) RequestKeyframe() {
 	c.lastRestart = now
 	c.restartReq = true
 	c.cancelProc()
+}
+
+// Restart は FFmpeg を直ちに再起動する（解像度変更の後など）。
+// 解像度変更では FFmpeg が先に自分で終了していることが多いので、その場合は再起動待ちを打ち切る。
+func (c *Capturer) Restart() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lastRestart = time.Now()
+	if c.cancelProc != nil {
+		c.restartReq = true
+		c.cancelProc()
+		return
+	}
+	if c.kick != nil {
+		select {
+		case c.kick <- struct{}{}:
+		default:
+		}
+	}
 }
 
 // lineLogger は FFmpeg の stderr を 1 行ずつログへ出す。

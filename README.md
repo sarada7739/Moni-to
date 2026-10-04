@@ -75,6 +75,7 @@ PowerShell の場合：
 | `-monitor` | プライマリ | キャプチャするモニター。番号（`-list-monitors` の左端）か名前（`DISPLAY4` など） |
 | `-list-monitors` | — | モニター一覧を表示して終了する |
 | `-no-input` | `false` | iPhone からの操作を受け付けない（見るだけにする） |
+| `-no-rotate` | `false` | iPhone の向きに合わせて仮想モニターの縦横を切り替えない |
 
 fps = 60、ビットレート = 10 Mbps は固定です（Phase 3 でフラグ化予定）。
 
@@ -84,11 +85,23 @@ fps = 60、ビットレート = 10 Mbps は固定です（Phase 3 でフラグ�
 
 1. `winget install --id=VirtualDrivers.Virtual-Display-Driver -e` で取得し、同梱の **VDD Control を管理者として起動して「Install」**を押す
    （winget だけではドライバ本体は入りません）
-2. `C:\VirtualDisplayDriverdd_settings.xml` の `<resolutions>` に iPhone の比率の解像度を追加する
-   （例：iPhone 18 Pro Max なら `1912x880`（画面の 2/3）または `2868x1320`（等倍））
+2. `C:\VirtualDisplayDriverdd_settings.xml` の `<resolutions>` に iPhone と同じ解像度を**横向き・縦向きの両方**追加する
+   （例：iPhone 18 Pro Max なら `2868x1320` と `1320x2868`。縦向きが無いと自動回転できません）
 3. デバイスマネージャー →「ディスプレイ アダプター」→ Virtual Display Driver を無効化 → 有効化
-4. Windows の「設定 → ディスプレイ」で「表示画面を拡張する」にし、仮想モニターの解像度を 2 で追加したものにする
+4. Windows の「設定 → ディスプレイ」で「表示画面を拡張する」にし、仮想モニターの解像度を 2 で追加したものにする。
+   **拡大率は 200%** を推奨（実質 1434×660。iPhone の画素と 1:1 でくっきり表示されます）
 5. `monito.exe -list-monitors` で番号を確認し、`monito.exe -monitor <番号>` で起動する
+
+> **拡大率の上限について**：Windows は拡大後の実質的な高さが小さくなりすぎる拡大率を選べないようにしています。
+> 例えば 1912×880 では 125% までしか選べません。大きく表示したい場合は解像度を上げて拡大率を上げてください。
+
+### 縦画面（自動回転）
+
+iPhone を縦にすると、仮想モニターの解像度が縦横入れ替わります（例：2868×1320 ⇔ 1320×2868）。切り替えには 1〜2 秒かかります。
+
+- 自動回転するのは **Virtual Display Driver のモニターだけ**です（実モニターの解像度は変更しません）。
+- 解像度が変わるため、仮想モニター上のウィンドウの位置・大きさは Windows によって調整されます。
+- 不要なら `-no-rotate` で無効にできます。
 
 ## iPhone からの操作
 

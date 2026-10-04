@@ -4,6 +4,7 @@ package stream
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -70,6 +71,9 @@ type Streamer struct {
 	newCapture func() *capture.Capturer
 	input      InputHandler // nil なら操作を受け付けない
 
+	// OnOrientation はクライアントの画面の向きが通知されたときに呼ばれる（nil なら無視）。
+	OnOrientation func(portrait bool)
+
 	mu  sync.Mutex
 	cur *viewer
 	seq int
@@ -128,6 +132,22 @@ func (s *Streamer) Close() {
 		v.close("")
 	}
 	s.udp.Close()
+}
+
+// RestartCapture は現在の視聴者の FFmpeg を再起動する（解像度変更の後など）。
+func (s *Streamer) RestartCapture() {
+	s.mu.Lock()
+	v := s.cur
+	s.mu.Unlock()
+	if v == nil {
+		return
+	}
+	v.mu.Lock()
+	c := v.capturer
+	v.mu.Unlock()
+	if c != nil {
+		c.Restart()
+	}
 }
 
 // Serve は認証済みの WebSocket で視聴者 1 台分のシグナリングを処理する（切断まで戻らない）。
@@ -225,18 +245,35 @@ func (v *viewer) handleOffer(sdp string) error {
 
 	// 操作イベント（タップ・ドラッグ・スクロール）はクライアントが作る DataChannel "input" で届く
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
-		if dc.Label() != "input" || v.s.input == nil {
+		if dc.Label() != "input" {
 			return
 		}
 		dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 			v.mu.Lock()
 			active := !v.closed
 			v.mu.Unlock()
-			if active {
+			if !active {
+				return
+			}
+			var head struct {
+				T        string `json:"t"`
+				Portrait bool   `json:"portrait"`
+			}
+			if json.Unmarshal(msg.Data, &head) == nil && head.T == "orient" {
+				if cb := v.s.OnOrientation; cb != nil {
+					go cb(head.Portrait) // 解像度変更は時間がかかるので別ゴルーチンで
+				}
+				return
+			}
+			if v.s.input != nil {
 				v.s.input.HandleJSON(msg.Data)
 			}
 		})
-		dc.OnClose(func() { v.s.input.ReleaseAll() })
+		dc.OnClose(func() {
+			if v.s.input != nil {
+				v.s.input.ReleaseAll()
+			}
+		})
 	})
 	pc.OnICEConnectionStateChange(func(st webrtc.ICEConnectionState) {
 		log.Printf("[viewer] ICE: %s", st)

@@ -128,6 +128,13 @@ func (in *Injector) Handle(ev Event) {
 	}
 }
 
+// Invalidate はモニター矩形のキャッシュを捨てる（解像度変更の直後に呼ぶ）。
+func (in *Injector) Invalidate() {
+	in.mu.Lock()
+	in.monAt = time.Time{}
+	in.mu.Unlock()
+}
+
 // ReleaseAll は押しっぱなしのボタンを離す（切断時にボタンが押されたまま残らないように）。
 func (in *Injector) ReleaseAll() {
 	in.mu.Lock()

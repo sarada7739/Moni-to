@@ -181,6 +181,7 @@ async function startPeer(sock) {
   const tr = pc.addTransceiver('video', { direction: 'recvonly' });
   // 操作イベント用。オファー作成前に作ると SDP にデータチャネルが含まれる
   dc = pc.createDataChannel('input', { ordered: true });
+  dc.onopen = () => sendOrientation(true);
   // H.264 を優先（ホスト側も H.264 しか出さない）
   if (tr.setCodecPreferences && RTCRtpReceiver.getCapabilities) {
     const caps = RTCRtpReceiver.getCapabilities('video');
@@ -237,6 +238,26 @@ function tryPlay() {
 MonitoInput.attach(video, (ev) => {
   if (dc && dc.readyState === 'open') dc.send(JSON.stringify(ev));
 });
+
+// 画面の向きをホストへ知らせる（ホストは仮想モニターの縦横を切り替える）
+const portraitQuery = window.matchMedia('(orientation: portrait)');
+let lastOrientation = null;
+let orientTimer = 0;
+function sendOrientation(force) {
+  const portrait = portraitQuery.matches;
+  if (!force && portrait === lastOrientation) return;
+  if (dc && dc.readyState === 'open') {
+    dc.send(JSON.stringify({ t: 'orient', portrait }));
+    lastOrientation = portrait;
+  }
+}
+function onOrientationChange() {
+  // 回転アニメーション中の揺れを避けるため少し待ってから送る
+  clearTimeout(orientTimer);
+  orientTimer = setTimeout(() => sendOrientation(false), 400);
+}
+portraitQuery.addEventListener('change', onOrientationChange);
+window.addEventListener('resize', onOrientationChange);
 
 // 最初のフレームが表示されたらオーバーレイを消す
 video.addEventListener('playing', hide);

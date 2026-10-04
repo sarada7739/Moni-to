@@ -49,6 +49,7 @@ func main() {
 		monitorF = flag.String("monitor", "", "キャプチャするモニター（番号、または DISPLAY4 のような名前。省略時はプライマリ）")
 		listMon  = flag.Bool("list-monitors", false, "モニター一覧を表示して終了する")
 		noInput  = flag.Bool("no-input", false, "iPhone からの操作（タップ・ドラッグ・スクロール）を受け付けない")
+		noRotate = flag.Bool("no-rotate", false, "iPhone の向きに合わせて仮想モニターの縦横を切り替えない")
 	)
 	flag.Parse()
 	log.SetFlags(log.Ltime)
@@ -65,7 +66,7 @@ func main() {
 	}
 
 	opts := options{port: *port, ip: *ipFlag, keyint: *keyint, ffmpeg: *ffmpegF, encoder: *encoderF,
-		name: *nameF, noMDNS: *noMDNS, resetDevices: *resetDev, monitor: *monitorF, noInput: *noInput}
+		name: *nameF, noMDNS: *noMDNS, resetDevices: *resetDev, monitor: *monitorF, noInput: *noInput, noRotate: *noRotate}
 	if err := run(opts); err != nil {
 		fmt.Fprintln(os.Stderr, "\nエラー:", err)
 		os.Exit(1)
@@ -83,6 +84,7 @@ type options struct {
 	resetDevices bool
 	monitor      string
 	noInput      bool
+	noRotate     bool
 }
 
 // listMonitors はモニター一覧を表示する。
@@ -161,11 +163,13 @@ func run(o options) error {
 
 	// 操作（タップ・ドラッグ・スクロール）
 	var inputHandler stream.InputHandler
+	var injector *input.Injector
 	if !o.noInput {
-		inputHandler = input.NewInjector(func() input.Rect {
+		injector = input.NewInjector(func() input.Rect {
 			m := currentMonitor()
 			return input.Rect{Left: m.Left, Top: m.Top, Right: m.Right, Bottom: m.Bottom}
 		})
+		inputHandler = injector
 	} else {
 		log.Printf("操作の受け付けは無効です（-no-input）")
 	}
@@ -178,6 +182,40 @@ func run(o options) error {
 		return err
 	}
 	defer streamer.Close()
+
+	// iPhone の向きに合わせて仮想モニターの縦横を切り替える（Virtual Display Driver のモニターのみ）
+	switch {
+	case o.noRotate:
+		log.Printf("自動回転: 無効（-no-rotate）")
+	case !display.IsVirtual(mon.DeviceName):
+		log.Printf("自動回転: 対象が仮想モニターではないため無効（実モニターの解像度は変更しません）")
+	default:
+		log.Printf("自動回転: 有効（iPhone の向きに合わせて %s の縦横を切り替えます）", mon.DeviceName)
+		var rotMu sync.Mutex
+		streamer.OnOrientation = func(portrait bool) {
+			rotMu.Lock()
+			defer rotMu.Unlock()
+			dev := currentMonitor().DeviceName
+			changed, to, err := display.Orient(dev, portrait)
+			if err != nil {
+				log.Printf("[rotate] %v", err)
+				return
+			}
+			if !changed {
+				return
+			}
+			dir := "横向き"
+			if portrait {
+				dir = "縦向き"
+			}
+			log.Printf("[rotate] iPhone が%sになったため %s を %s に切り替えました", dir, dev, to)
+			time.Sleep(300 * time.Millisecond) // 表示モードの切り替えが落ち着くのを待つ
+			if injector != nil {
+				injector.Invalidate()
+			}
+			streamer.RestartCapture()
+		}
+	}
 
 	// 登録済み端末
 	devPath, err := auth.DefaultDevicesPath()

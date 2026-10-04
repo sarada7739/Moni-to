@@ -169,3 +169,86 @@ func Orient(device string, portrait bool) (changed bool, to Mode, err error) {
 	}
 	return true, to, nil
 }
+
+const (
+	dmPosition        = 0x00000020
+	cdsNoReset        = 0x10000000
+	attachedToDesktop = 0x00000001 // DISPLAY_DEVICE_ATTACHED_TO_DESKTOP
+)
+
+// VirtualDevice は Virtual Display Driver の表示デバイス名と、デスクトップに接続中かを返す。
+func VirtualDevice() (name string, attached bool, ok bool) {
+	for i := uint32(0); ; i++ {
+		dd := new(displayDevice)
+		dd.Cb = uint32(unsafe.Sizeof(*dd))
+		r, _, _ := procEnumDisplayDevicesW.Call(0, uintptr(i), uintptr(unsafe.Pointer(dd)), 0)
+		if r == 0 {
+			return "", false, false
+		}
+		if strings.Contains(strings.ToLower(windows.UTF16ToString(dd.DeviceString[:])), "virtual display") {
+			return windows.UTF16ToString(dd.DeviceName[:]), dd.StateFlags&attachedToDesktop != 0, true
+		}
+	}
+}
+
+// Placement はモニターの表示モードと仮想デスクトップ上の位置。
+type Placement struct {
+	Mode
+	X, Y int32
+}
+
+// CurrentPlacement は現在の表示モードと位置を返す。
+func CurrentPlacement(device string) (Placement, error) {
+	dm, ok := enumMode(device, enumCurrentSettings)
+	if !ok {
+		return Placement{}, fmt.Errorf("%s の現在の表示モードを取得できません", device)
+	}
+	return Placement{Mode{int(dm.PelsWidth), int(dm.PelsHeight), int(dm.DisplayFrequency)}, dm.PositionX, dm.PositionY}, nil
+}
+
+func applyDisplayChanges() error {
+	r, _, _ := procChangeDisplaySettingsExW.Call(0, 0, 0, 0, 0)
+	if int32(r) != 0 {
+		return fmt.Errorf("表示設定を適用できません（DISP_CHANGE=%d）", int32(r))
+	}
+	return nil
+}
+
+// Detach はモニターをデスクトップから外す（設定アプリの「このディスプレイを切断する」と同じ）。
+func Detach(device string) error {
+	dm := new(devMode)
+	dm.Size = uint16(unsafe.Sizeof(*dm))
+	dm.Fields = dmPosition | dmPelsWidth | dmPelsHeight // 幅・高さ 0 で切断
+	name, _ := windows.UTF16PtrFromString(device)
+	r, _, _ := procChangeDisplaySettingsExW.Call(uintptr(unsafe.Pointer(name)), uintptr(unsafe.Pointer(dm)), 0,
+		cdsUpdateRegistry|cdsNoReset, 0)
+	if int32(r) != 0 {
+		return fmt.Errorf("%s を切断できません（DISP_CHANGE=%d）", device, int32(r))
+	}
+	return applyDisplayChanges()
+}
+
+// Attach はモニターを指定の表示モード・位置でデスクトップに接続する。
+func Attach(device string, p Placement) error {
+	dm := new(devMode)
+	dm.Size = uint16(unsafe.Sizeof(*dm))
+	dm.Fields = dmPosition | dmPelsWidth | dmPelsHeight | dmDisplayFrequency
+	dm.PositionX, dm.PositionY = p.X, p.Y
+	dm.PelsWidth, dm.PelsHeight, dm.DisplayFrequency = uint32(p.Width), uint32(p.Height), uint32(p.Hz)
+	name, _ := windows.UTF16PtrFromString(device)
+	r, _, _ := procChangeDisplaySettingsExW.Call(uintptr(unsafe.Pointer(name)), uintptr(unsafe.Pointer(dm)), 0,
+		cdsUpdateRegistry|cdsNoReset, 0)
+	if int32(r) != 0 {
+		return fmt.Errorf("%s を接続できません（DISP_CHANGE=%d）", device, int32(r))
+	}
+	return applyDisplayChanges()
+}
+
+// FirstMode は選択可能な最初の表示モード（ドライバが先頭に挙げるもの）を返す。
+func FirstMode(device string) (Mode, error) {
+	dm, ok := enumMode(device, 0)
+	if !ok {
+		return Mode{}, fmt.Errorf("%s の表示モードを取得できません", device)
+	}
+	return Mode{int(dm.PelsWidth), int(dm.PelsHeight), int(dm.DisplayFrequency)}, nil
+}

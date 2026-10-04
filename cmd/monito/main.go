@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/windows"
@@ -46,7 +47,8 @@ func main() {
 		nameF    = flag.String("name", "", "mDNS のホスト名（.local は不要。省略時は monito-<PC名>）")
 		noMDNS   = flag.Bool("no-mdns", false, "mDNS 名（.local）を使わず IP の URL だけで動かす")
 		resetDev = flag.Bool("reset-devices", false, "登録済みの端末をすべて削除してから起動する")
-		monitorF = flag.String("monitor", "", "キャプチャするモニター（番号、または DISPLAY4 のような名前。省略時はプライマリ）")
+		monitorF = flag.String("monitor", "", "キャプチャするモニター（番号、DISPLAY4 のような名前、または virtual。省略時は仮想ディスプレイ→無ければプライマリ）")
+		keepDisp = flag.Bool("keep-display", false, "終了時に仮想ディスプレイを切断しない")
 		listMon  = flag.Bool("list-monitors", false, "モニター一覧を表示して終了する")
 		noInput  = flag.Bool("no-input", false, "iPhone からの操作（タップ・ドラッグ・スクロール）を受け付けない")
 		noRotate = flag.Bool("no-rotate", false, "iPhone の向きに合わせて仮想モニターの縦横を切り替えない")
@@ -69,7 +71,7 @@ func main() {
 
 	opts := options{port: *port, ip: *ipFlag, keyint: *keyint, ffmpeg: *ffmpegF, encoder: *encoderF,
 		name: *nameF, noMDNS: *noMDNS, resetDevices: *resetDev, monitor: *monitorF, noInput: *noInput, noRotate: *noRotate,
-		scaleLandscape: *scaleL, scalePortrait: *scaleP}
+		scaleLandscape: *scaleL, scalePortrait: *scaleP, keepDisplay: *keepDisp}
 	if err := run(opts); err != nil {
 		fmt.Fprintln(os.Stderr, "\nエラー:", err)
 		os.Exit(1)
@@ -91,6 +93,7 @@ type options struct {
 
 	scaleLandscape int
 	scalePortrait  int
+	keepDisplay    bool
 }
 
 // listMonitors はモニター一覧を表示する。
@@ -101,7 +104,14 @@ func listMonitors() error {
 	}
 	fmt.Println("モニター一覧（-monitor には番号か名前を指定します）:")
 	for _, m := range mons {
-		fmt.Println("  " + m.String())
+		v := ""
+		if display.IsVirtual(m.DeviceName) {
+			v = " [仮想ディスプレイ]"
+		}
+		fmt.Println("  " + m.String() + v)
+	}
+	if dev, attached, ok := display.VirtualDevice(); ok && !attached {
+		fmt.Printf("  （仮想ディスプレイ %s は切断中です。-monitor を省略するか virtual を指定すると起動時に接続します）\n", dev)
 	}
 	return nil
 }
@@ -130,7 +140,10 @@ func run(o options) error {
 	}
 	log.Printf("FFmpeg: %s", ff)
 
-	// モニター
+	// モニター（省略時・virtual 指定時は、切断中の仮想ディスプレイを先に接続する）
+	if o.monitor == "" || isVirtualSpec(o.monitor) {
+		attachVirtualIfNeeded()
+	}
 	mons, err := display.List()
 	if err != nil {
 		return err
@@ -139,8 +152,25 @@ func run(o options) error {
 	for _, m := range mons {
 		log.Printf("  %s", m)
 	}
-	mon := display.Primary(mons)
-	if o.monitor != "" {
+	var virtual *display.Monitor
+	for i := range mons {
+		if display.IsVirtual(mons[i].DeviceName) {
+			virtual = &mons[i]
+			break
+		}
+	}
+	var mon display.Monitor
+	switch {
+	case isVirtualSpec(o.monitor):
+		if virtual == nil {
+			return errors.New("仮想ディスプレイが見つかりません（Virtual Display Driver が入っていないか、無効になっています）")
+		}
+		mon = *virtual
+	case o.monitor == "" && virtual != nil:
+		mon = *virtual
+	case o.monitor == "":
+		mon = display.Primary(mons)
+	default:
 		if mon, err = display.Find(mons, o.monitor); err != nil {
 			return err
 		}
@@ -148,7 +178,7 @@ func run(o options) error {
 	log.Printf("キャプチャ対象: %s", mon)
 
 	// 対象モニターの最新情報を返す。モニターの抜き差しや解像度変更で番号・座標が
-	// 変わっても追従できるよう、デバイス名（\.\DISPLAYn）で引き直す
+	// 変わっても追従できるよう、デバイス名（\\.\DISPLAYn）で引き直す
 	var monMu sync.Mutex
 	currentMonitor := func() display.Monitor {
 		monMu.Lock()
@@ -161,9 +191,15 @@ func run(o options) error {
 		return mon
 	}
 
+	// 終了時に仮想ディスプレイを切断する（配信の停止後に実行されるよう、ここで defer する）
+	if display.IsVirtual(mon.DeviceName) && !o.keepDisplay {
+		defer func() { detachVirtual(currentMonitor().DeviceName) }()
+	}
+
 	params := capture.Params{FPS: defaultFPS, BitrateKbps: defaultBitrate, KeyInterval: keyint}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	// Ctrl+C に加え、コンソールの × ボタン（CTRL_CLOSE_EVENT → SIGTERM）でも後片付けする
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	enc, err := capture.Select(ctx, ff, o.encoder, mon, params, log.Printf)

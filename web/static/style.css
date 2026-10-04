@@ -13,9 +13,14 @@ html, body {
 
 #screen {
   position: fixed;
-  inset: 0;
+  /* ステータスバーの裏に映像を置くと iOS がぼかして表示するため、上端は安全領域の内側から始める
+     （横向きではステータスバーが消えるので 0 になり、画面いっぱいに表示される） */
+  top: env(safe-area-inset-top, 0px);
+  left: 0;
+  right: 0;
+  bottom: 0;
   width: 100%;
-  height: 100%;
+  height: calc(100% - env(safe-area-inset-top, 0px));
   object-fit: contain;
   background: #000;
 }

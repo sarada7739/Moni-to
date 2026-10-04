@@ -92,3 +92,21 @@ func Candidates() ([]Candidate, error) {
 	sort.SliceStable(out, func(i, j int) bool { return score(out[i]) > score(out[j]) })
 	return out, nil
 }
+
+// InterfaceOf は ip を持つインターフェースを返す（見つからなければ nil）。
+func InterfaceOf(ip net.IP) *net.Interface {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	for _, ifc := range ifaces {
+		addrs, _ := ifc.Addrs()
+		for _, a := range addrs {
+			if ipn, ok := a.(*net.IPNet); ok && ipn.IP.Equal(ip) {
+				ifc := ifc
+				return &ifc
+			}
+		}
+	}
+	return nil
+}

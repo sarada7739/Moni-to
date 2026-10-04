@@ -25,6 +25,7 @@ type Server struct {
 	Auth     *auth.Manager
 	Streamer *stream.Streamer
 	Static   fs.FS
+	Home     string // mDNS 名の URL（例: http://monito-mypc.local:8765）。空なら使わない
 
 	upgrader websocket.Upgrader
 }
@@ -34,7 +35,16 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/", noCache(http.FileServer(http.FS(s.Static))))
 	mux.HandleFunc("/ws", s.handleWS)
+	mux.HandleFunc("/ping", handlePing)
 	return mux
+}
+
+// handlePing は mDNS 名で到達できるかをクライアントが確かめるためのエンドポイント。
+// IP の URL のページから .local の URL へ fetch するので CORS を許可する。
+func handlePing(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Write([]byte("ok"))
 }
 
 // noCache はページ更新が確実に反映されるようキャッシュを無効にする。
@@ -45,9 +55,9 @@ func noCache(h http.Handler) http.Handler {
 	})
 }
 
-// handleWS は WebSocket を受け付け、トークンまたはセッション鍵で認証する。
-//   - ?t=<トークン>  … QR から来た初回接続。消費してセッション鍵を発行する
-//   - ?s=<セッション鍵> … ホーム画面からの起動・再接続
+// handleWS は WebSocket を受け付け、トークンまたは端末鍵で認証する。
+//   - ?t=<トークン> … QR から来た初回接続。消費して端末鍵を発行する
+//   - ?s=<端末鍵>   … ホーム画面からの起動・再接続
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	ws, err := s.upgrader.Upgrade(w, r, nil) // Origin は同一ホストのみ許可（gorilla の既定）
 	if err != nil {
@@ -59,7 +69,10 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case q.Get("t") != "":
-		sess, ok := s.Auth.ConsumeToken(q.Get("t"))
+		key, ok, err := s.Auth.ConsumeToken(q.Get("t"), r.UserAgent())
+		if err != nil {
+			log.Printf("[auth] 端末一覧の保存に失敗しました（この端末はホスト再起動後に使えなくなります）: %v", err)
+		}
 		if !ok {
 			log.Printf("[auth] %s: 無効または期限切れのトークン", who)
 			conn.Send(stream.Message{Type: "error", Code: "auth",
@@ -67,21 +80,21 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			closeSoon(conn)
 			return
 		}
-		log.Printf("[auth] %s: トークン認証に成功（セッション発行）", who)
-		if err := conn.Send(stream.Message{Type: "session", Session: sess}); err != nil {
+		log.Printf("[auth] %s: トークン認証に成功（端末を登録しました）", who)
+		if err := conn.Send(stream.Message{Type: "session", Session: key}); err != nil {
 			conn.Close()
 			return
 		}
-	case s.Auth.ValidSession(q.Get("s")):
-		log.Printf("[auth] %s: セッション鍵で認証", who)
+	case s.Auth.ValidKey(q.Get("s")):
+		log.Printf("[auth] %s: 登録済み端末として認証", who)
 	default:
-		log.Printf("[auth] %s: 認証情報なし／無効なセッション", who)
+		log.Printf("[auth] %s: 認証情報なし／未登録の端末", who)
 		conn.Send(stream.Message{Type: "error", Code: "auth",
-			Message: "接続情報が無効です（ホストが再起動された可能性があります）。PC に表示されている QR コードを読み取ってください。"})
+			Message: "この端末は登録されていません（登録がリセットされた可能性があります）。PC に表示されている QR コードを読み取ってください。"})
 		closeSoon(conn)
 		return
 	}
-	s.Streamer.Serve(conn, who)
+	s.Streamer.Serve(conn, who, s.Home)
 }
 
 // closeSoon はエラーメッセージがクライアントに届くよう少し待ってから閉じる。

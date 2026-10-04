@@ -20,6 +20,7 @@ import (
 	"moni-to/internal/auth"
 	"moni-to/internal/capture"
 	"moni-to/internal/display"
+	"moni-to/internal/mdns"
 	"moni-to/internal/netutil"
 	"moni-to/internal/server"
 	"moni-to/internal/stream"
@@ -41,6 +42,9 @@ func main() {
 		keyint   = flag.Duration("keyint", 2*time.Second, "キーフレーム間隔（例: 2s, 1500ms）")
 		ffmpegF  = flag.String("ffmpeg", "", "ffmpeg.exe のパス（省略時は exe と同じフォルダ → PATH の順に探す）")
 		encoderF = flag.String("encoder", "auto", "エンコーダ（auto, h264_nvenc, h264_qsv, h264_amf, libx264, h264_mf）")
+		nameF    = flag.String("name", "", "mDNS のホスト名（.local は不要。省略時は monito-<PC名>）")
+		noMDNS   = flag.Bool("no-mdns", false, "mDNS 名（.local）を使わず IP の URL だけで動かす")
+		resetDev = flag.Bool("reset-devices", false, "登録済みの端末をすべて削除してから起動する")
 	)
 	flag.Parse()
 	log.SetFlags(log.Ltime)
@@ -48,25 +52,39 @@ func main() {
 	enableVT()
 	display.EnableDPIAwareness()
 
-	if err := run(*port, *ipFlag, *keyint, *ffmpegF, *encoderF); err != nil {
+	opts := options{port: *port, ip: *ipFlag, keyint: *keyint, ffmpeg: *ffmpegF, encoder: *encoderF,
+		name: *nameF, noMDNS: *noMDNS, resetDevices: *resetDev}
+	if err := run(opts); err != nil {
 		fmt.Fprintln(os.Stderr, "\nエラー:", err)
 		os.Exit(1)
 	}
 }
 
-func run(port int, ipFlag string, keyint time.Duration, ffmpegPath, encoderName string) error {
+type options struct {
+	port         int
+	ip           string
+	keyint       time.Duration
+	ffmpeg       string
+	encoder      string
+	name         string
+	noMDNS       bool
+	resetDevices bool
+}
+
+func run(o options) error {
+	port, keyint := o.port, o.keyint
 	if keyint <= 0 {
 		return errors.New("-keyint には正の値を指定してください")
 	}
 
 	// LAN IP の決定
-	lanIP, err := chooseIP(ipFlag)
+	lanIP, err := chooseIP(o.ip)
 	if err != nil {
 		return err
 	}
 
 	// FFmpeg
-	ff, err := capture.FindFFmpeg(ffmpegPath)
+	ff, err := capture.FindFFmpeg(o.ffmpeg)
 	if err != nil {
 		return err
 	}
@@ -89,7 +107,7 @@ func run(port int, ipFlag string, keyint time.Duration, ffmpegPath, encoderName 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	enc, err := capture.Select(ctx, ff, encoderName, mon, params, log.Printf)
+	enc, err := capture.Select(ctx, ff, o.encoder, mon, params, log.Printf)
 	if err != nil {
 		return err
 	}
@@ -104,8 +122,44 @@ func run(port int, ipFlag string, keyint time.Duration, ffmpegPath, encoderName 
 	}
 	defer streamer.Close()
 
+	// 登録済み端末
+	devPath, err := auth.DefaultDevicesPath()
+	if err != nil {
+		return err
+	}
+	if o.resetDevices {
+		if err := os.Remove(devPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("端末一覧を削除できません: %w", err)
+		}
+		log.Printf("登録済みの端末をすべて削除しました")
+	}
+	am, err := auth.NewManager(tokenTTL, devPath)
+	if err != nil {
+		return err
+	}
+	log.Printf("登録済み端末: %d 台（%s）", am.DeviceCount(), devPath)
+
+	// mDNS 名（IP が変わってもホーム画面のアイコンが使えるように）
+	home := ""
+	if !o.noMDNS {
+		name := o.name
+		if name == "" {
+			name = mdns.DefaultName()
+		} else {
+			name = mdns.Sanitize(name)
+		}
+		host := name + ".local"
+		resp, err := mdns.Start(host, lanIP, netutil.InterfaceOf(lanIP))
+		if err != nil {
+			log.Printf("mDNS を開始できませんでした（IP の URL のみで動作します）: %v", err)
+		} else {
+			defer resp.Close()
+			home = fmt.Sprintf("http://%s", net.JoinHostPort(host, strconv.Itoa(port)))
+			log.Printf("mDNS 名: %s → %s", host, lanIP)
+		}
+	}
+
 	// 認証と QR 表示
-	am := auth.NewManager(tokenTTL)
 	base := fmt.Sprintf("http://%s/", net.JoinHostPort(lanIP.String(), strconv.Itoa(port)))
 	var printMu sync.Mutex
 	am.OnTokenChange = func(tok string, exp time.Time) {
@@ -116,7 +170,7 @@ func run(port int, ipFlag string, keyint time.Duration, ffmpegPath, encoderName 
 	}
 
 	// HTTP（LAN IP と 127.0.0.1 の両方で待ち受ける。0.0.0.0 にはしない）
-	srv := &server.Server{Auth: am, Streamer: streamer, Static: web.Static()}
+	srv := &server.Server{Auth: am, Streamer: streamer, Static: web.Static(), Home: home}
 	handler := srv.Handler()
 	addrs := []string{net.JoinHostPort(lanIP.String(), strconv.Itoa(port))}
 	if !lanIP.IsLoopback() {

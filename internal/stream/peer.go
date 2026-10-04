@@ -33,6 +33,8 @@ type Message struct {
 	Encoder string `json:"encoder,omitempty"`
 	Width   int32  `json:"width,omitempty"`
 	Height  int32  `json:"height,omitempty"`
+	Home    string `json:"home,omitempty"` // mDNS 名の URL（ホーム画面用）
+	OK      bool   `json:"ok,omitempty"`
 }
 
 // Conn はスレッドセーフな WebSocket 送信をまとめたもの。
@@ -122,7 +124,8 @@ func (s *Streamer) Close() {
 }
 
 // Serve は認証済みの WebSocket で視聴者 1 台分のシグナリングを処理する（切断まで戻らない）。
-func (s *Streamer) Serve(conn *Conn, who string) {
+// home は mDNS 名の URL で、クライアントはここへ移れるか試す。
+func (s *Streamer) Serve(conn *Conn, who, home string) {
 	s.mu.Lock()
 	s.seq++
 	v := &viewer{id: s.seq, who: who, conn: conn, s: s}
@@ -146,7 +149,7 @@ func (s *Streamer) Serve(conn *Conn, who string) {
 		log.Printf("[viewer] %s が切断しました", who)
 	}()
 
-	if err := conn.Send(Message{Type: "ready"}); err != nil {
+	if err := conn.Send(Message{Type: "ready", Home: home}); err != nil {
 		return
 	}
 	for {
@@ -160,6 +163,13 @@ func (s *Streamer) Serve(conn *Conn, who string) {
 				log.Printf("[viewer] オファー処理に失敗: %v", err)
 				conn.Send(Message{Type: "error", Message: "接続の確立に失敗しました: " + err.Error()})
 				return
+			}
+		case "homeProbe":
+			if m.OK {
+				log.Printf("[mdns] %s から %s に到達できました。移動します", who, home)
+			} else {
+				log.Printf("[mdns] %s から %s に到達できませんでした。IP の URL のまま接続します"+
+					"（この状態でホーム画面に追加すると、IP が変わったときに追加し直しが必要です）", who, home)
 			}
 		}
 	}
@@ -312,4 +322,3 @@ func (v *viewer) close(reason string) {
 	}
 	v.conn.Close()
 }
-

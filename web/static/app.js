@@ -1,9 +1,10 @@
 'use strict';
 // Moni-to クライアント
 // 認証の流れ：
-//   1. QR の URL（?t=トークン）で開く → WebSocket で送ると、セッション鍵が返る
-//   2. URL を ?s=セッション鍵 に書き換える → 「ホーム画面に追加」するとこの URL で起動する
-//   3. 以降はセッション鍵で接続（ホストを再起動するまで有効）
+//   1. QR の URL（http://<IP>/?t=トークン）で開く → WebSocket で送ると、端末鍵が返る
+//   2. mDNS 名（http://monito-<PC名>.local/）に届けば、そこへ ?s=端末鍵 付きで移動する
+//      → 「ホーム画面に追加」すると、IP が変わっても使える URL が起動 URL になる
+//   3. 以降は端末鍵で接続（ホストを再起動しても有効。-reset-devices で無効化）
 // manifest に start_url を書いていないのは、追加時点の URL（?s=...）を起動 URL にするため。
 
 const video = document.getElementById('screen');
@@ -16,6 +17,7 @@ let ws = null;
 let pc = null;
 let actionHandler = null;
 let halted = false; // 追い出し・認証エラー後は自動で再接続しない
+let homeTried = false; // mDNS 名への移動はページごとに 1 回だけ試す
 
 // localStorage はプライベートブラウズ等で例外になることがあるので包む
 const store = {
@@ -99,6 +101,7 @@ function connect() {
         history.replaceState(null, '', '?s=' + encodeURIComponent(m.session));
         break;
       case 'ready':
+        if (await moveToHome(sock, m.home)) return;
         try {
           await startPeer(sock);
         } catch (e) {
@@ -139,6 +142,36 @@ function connect() {
     if (ws !== sock || finished) return;
     show('切断されました。', '再接続', connect);
   };
+}
+
+// IP の URL で開いている場合、mDNS 名の URL へ移れるか試す。移動したら true
+async function moveToHome(sock, home) {
+  if (!home || homeTried || location.origin === home) return false;
+  const h = location.hostname;
+  if (h === 'localhost' || h === '127.0.0.1') return false; // PC での確認時は移動しない
+  homeTried = true;
+  const key = new URLSearchParams(location.search).get('s') || store.get(SESSION_KEY);
+  if (!key) return false;
+
+  let ok = false;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 2000);
+  try {
+    const res = await fetch(home + '/ping', { cache: 'no-store', signal: ac.signal });
+    ok = res.ok;
+  } catch {
+    ok = false;
+  } finally {
+    clearTimeout(timer);
+  }
+  try {
+    sock.send(JSON.stringify({ type: 'homeProbe', ok }));
+  } catch { /* 無視 */ }
+  if (!ok) return false;
+
+  show('接続先を切り替えています…');
+  location.replace(home + '/?s=' + encodeURIComponent(key));
+  return true;
 }
 
 async function startPeer(sock) {

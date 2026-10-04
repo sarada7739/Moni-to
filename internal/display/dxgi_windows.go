@@ -55,11 +55,11 @@ const (
 	dxgiAdapterFlagSoft = 2
 
 	// vtable のインデックス（IUnknown 3 + IDXGIObject 4 = 7 から各インターフェースのメソッド）
-	vtRelease            = 2
+	vtRelease             = 2
 	vtFactoryEnumAdapter1 = 12 // IDXGIFactory(5) の後の IDXGIFactory1::EnumAdapters1
-	vtAdapterEnumOutputs = 7
-	vtAdapterGetDesc1    = 10 // IDXGIAdapter1::GetDesc1
-	vtOutputGetDesc      = 7
+	vtAdapterEnumOutputs  = 7
+	vtAdapterGetDesc1     = 10 // IDXGIAdapter1::GetDesc1
+	vtOutputGetDesc       = 7
 )
 
 // DXGI_OUTPUT_DESC

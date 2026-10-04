@@ -39,7 +39,7 @@ var (
 func TestNALReader(t *testing.T) {
 	data := stream(aud, sps, pps, idr, aud, p1)
 	for name, r := range map[string]io.Reader{
-		"一括":    bytes.NewReader(data),
+		"一括":     bytes.NewReader(data),
 		"1バイトずつ": oneByteReader{bytes.NewReader(data)},
 	} {
 		nr := NewNALReader(r)

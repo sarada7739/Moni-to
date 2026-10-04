@@ -35,7 +35,7 @@ func (p Params) GOP() int {
 // Encoder は 1 種類の H.264 エンコーダの設定。
 type Encoder struct {
 	Name   string
-	Filter string                    // ddagrab の後ろにつなぐフィルタ（先頭はカンマ）
+	Filter string                  // ddagrab の後ろにつなぐフィルタ（先頭はカンマ）
 	Args   func(p Params) []string // エンコーダ固有の引数
 }
 

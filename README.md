@@ -26,9 +26,19 @@ go build -o monito.exe ./cmd/monito
 
 ## 起動方法
 
-```bash
-./monito.exe
+コマンドプロンプト（cmd.exe）の場合：
+
+```bat
+monito.exe
 ```
+
+PowerShell の場合：
+
+```powershell
+.\monito.exe
+```
+
+フラグを付ける例：`monito.exe -port 9000 -keyint 1s`
 
 1. 起動すると LAN IP の候補・モニター一覧・使用エンコーダが表示され、ターミナルに QR コードが出ます。
 2. iPhone の標準カメラで QR を読み取り、表示されたリンクを開くと画面が映ります。

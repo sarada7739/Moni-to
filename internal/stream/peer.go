@@ -32,9 +32,9 @@ type Message struct {
 	Message string `json:"message,omitempty"`
 	Code    string `json:"code,omitempty"`
 	Encoder string `json:"encoder,omitempty"`
-	Width   int32  `json:"width,omitempty"`
-	Height  int32  `json:"height,omitempty"`
-	Home    string `json:"home,omitempty"` // mDNS 名の URL（ホーム画面用）
+	FPS     int    `json:"fps,omitempty"`
+	Bitrate int    `json:"bitrate,omitempty"` // 目標ビットレート（kbps）
+	Home    string `json:"home,omitempty"`    // mDNS 名の URL（ホーム画面用）
 	OK      bool   `json:"ok,omitempty"`
 }
 
@@ -327,9 +327,10 @@ func (v *viewer) startCapture(track *webrtc.TrackLocalStaticSample) {
 		defer close(done)
 		c.Run(ctx)
 	}()
-	v.conn.Send(Message{Type: "info", Encoder: c.Encoder.Name, Width: c.Monitor.Width(), Height: c.Monitor.Height()})
-	log.Printf("[viewer] 配信開始 (%s, %dx%d, %dfps, %dkbps)",
-		c.Encoder.Name, c.Monitor.Width(), c.Monitor.Height(), c.Params.FPS, c.Params.BitrateKbps)
+	// 実際の出力解像度などは FFmpeg 起動時に capture 側がログへ出す
+	p := c.Params.Resolve(c.Monitor)
+	v.conn.Send(Message{Type: "info", Encoder: c.Encoder.Name, FPS: p.FPS, Bitrate: p.BitrateKbps})
+	log.Printf("[viewer] 配信開始")
 }
 
 // readRTCP は受信側からの RTCP を読み、PLI/FIR ならキーフレームを要求する。

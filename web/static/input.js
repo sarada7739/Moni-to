@@ -5,6 +5,7 @@
 //   ドラッグ          → 左ボタンを押したまま移動
 //   長押し（500ms）   → 右クリック
 //   2 本指で上下左右  → スクロール（指の動きにコンテンツが追従する向き）
+//   3 本指で触れる    → 統計オーバーレイの表示切り替え（ホストには送らない）
 //
 // 座標は映像の表示領域（object-fit: contain の黒帯を除いた範囲）に対する 0〜1 で送る。
 // Pointer Events を使うので、PC の Chrome / Edge ではマウスで同じ操作を確認できる。
@@ -14,12 +15,16 @@ const MonitoInput = (() => {
   const MOVE_THRESHOLD_PX = 10; // これ以上動いたらタップではなくドラッグ
   const WHEEL_PER_PX = 3; // 指の移動 1px あたりのホイール量（40px で 1 ノッチ = 120）
 
-  function attach(video, send) {
+  // opts.onThreeFingerTap: 3 本指で触れたときに呼ばれる（統計表示の切り替え用）
+  function attach(video, send, opts) {
+    const onThreeFingerTap = (opts && opts.onThreeFingerTap) || null;
     const pointers = new Map(); // pointerId → {x, y}（クライアント座標）
     let mode = 'idle'; // idle | pending | drag | scroll | done
     let start = null; // 最初の指の {x, y}
     let longTimer = null;
     let scrollLast = null; // 2 本指の重心
+    let scrollStart = null; // スクロール開始時の重心
+    let cursorPlaced = false; // スクロール用にカーソルを移動済みか
     let wheelAcc = { v: 0, h: 0 };
     let pendingMove = null; // rAF でまとめて送る移動
     let rafId = 0;
@@ -87,9 +92,9 @@ const MonitoInput = (() => {
       clearLongPress();
       mode = 'scroll';
       scrollLast = centroid();
+      scrollStart = scrollLast;
+      cursorPlaced = false;
       wheelAcc = { v: 0, h: 0 };
-      // ホイールはカーソル下のウィンドウに届くので、先にカーソルを指の間へ移す
-      sendAt('move', scrollLast.x, scrollLast.y);
     }
 
     function onDown(e) {
@@ -122,6 +127,11 @@ const MonitoInput = (() => {
         }, LONG_PRESS_MS);
       } else if (pointers.size === 2 && mode === 'pending') {
         beginScroll();
+      } else if (pointers.size === 3 && (mode === 'pending' || mode === 'scroll')) {
+        // 3 本指はホストへは送らず、クライアント側の機能に使う
+        clearLongPress();
+        mode = 'done';
+        if (onThreeFingerTap) onThreeFingerTap();
       }
       // ドラッグ中の 2 本目、3 本目以降の指は無視する
     }
@@ -157,6 +167,12 @@ const MonitoInput = (() => {
         if (v !== 0 || h !== 0) {
           wheelAcc.v -= v;
           wheelAcc.h -= h;
+          // ホイールはカーソル下のウィンドウに届くので、最初のスクロールの前にカーソルを指の間へ移す
+          // （3 本指タップでカーソルが動かないよう、実際にスクロールするまで遅らせる）
+          if (!cursorPlaced) {
+            sendAt('move', scrollStart.x, scrollStart.y);
+            cursorPlaced = true;
+          }
           send({ t: 'wheel', v, h });
         }
       }

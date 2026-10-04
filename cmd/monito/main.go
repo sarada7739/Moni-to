@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -30,18 +31,16 @@ import (
 	"moni-to/web"
 )
 
-// Phase 1 の固定値（Phase 3 でフラグ化する）
-const (
-	defaultFPS     = 60
-	defaultBitrate = 10000 // kbps
-	tokenTTL       = 5 * time.Minute
-)
+const tokenTTL = 5 * time.Minute
 
 func main() {
 	var (
 		port     = flag.Int("port", 8765, "HTTP（TCP）と WebRTC（UDP）で使うポート番号")
 		ipFlag   = flag.String("ip", "", "LAN の IP アドレスを指定する（省略時は自動検出）")
 		keyint   = flag.Duration("keyint", 2*time.Second, "キーフレーム間隔（例: 2s, 1500ms）")
+		fpsF     = flag.Int("fps", 60, "フレームレート")
+		bitrateF = flag.Int("bitrate", 0, "ビットレート（kbps）。0 なら解像度と fps から自動")
+		resF     = flag.String("resolution", "", "出力の最大解像度（例: 1920x1080）。縦横比を保って縮小し、縦長の画面では縦横を入れ替える。省略時は元のまま")
 		ffmpegF  = flag.String("ffmpeg", "", "ffmpeg.exe のパス（省略時は exe と同じフォルダ → PATH の順に探す）")
 		encoderF = flag.String("encoder", "auto", "エンコーダ（auto, h264_nvenc, h264_qsv, h264_amf, libx264, h264_mf）")
 		nameF    = flag.String("name", "", "mDNS のホスト名（.local は不要。省略時は monito-<PC名>）")
@@ -69,7 +68,7 @@ func main() {
 		return
 	}
 
-	opts := options{port: *port, ip: *ipFlag, keyint: *keyint, ffmpeg: *ffmpegF, encoder: *encoderF,
+	opts := options{port: *port, ip: *ipFlag, keyint: *keyint, fps: *fpsF, bitrate: *bitrateF, resolution: *resF, ffmpeg: *ffmpegF, encoder: *encoderF,
 		name: *nameF, noMDNS: *noMDNS, resetDevices: *resetDev, monitor: *monitorF, noInput: *noInput, noRotate: *noRotate,
 		scaleLandscape: *scaleL, scalePortrait: *scaleP, keepDisplay: *keepDisp}
 	if err := run(opts); err != nil {
@@ -82,6 +81,9 @@ type options struct {
 	port         int
 	ip           string
 	keyint       time.Duration
+	fps          int
+	bitrate      int
+	resolution   string
 	ffmpeg       string
 	encoder      string
 	name         string
@@ -120,6 +122,12 @@ func run(o options) error {
 	port, keyint := o.port, o.keyint
 	if keyint <= 0 {
 		return errors.New("-keyint には正の値を指定してください")
+	}
+	if o.fps < 1 || o.fps > 240 {
+		return errors.New("-fps には 1〜240 を指定してください")
+	}
+	if o.bitrate < 0 {
+		return errors.New("-bitrate には 0（自動）以上を指定してください")
 	}
 	for name, v := range map[string]int{"-scale-landscape": o.scaleLandscape, "-scale-portrait": o.scalePortrait} {
 		if v != 0 && !display.ValidScale(v) {
@@ -197,7 +205,12 @@ func run(o options) error {
 		defer func() { releaseVirtual(currentMonitor().DeviceName) }()
 	}
 
-	params := capture.Params{FPS: defaultFPS, BitrateKbps: defaultBitrate, KeyInterval: keyint}
+	params := capture.Params{FPS: o.fps, BitrateKbps: o.bitrate, KeyInterval: keyint}
+	if o.resolution != "" {
+		if params.MaxWidth, params.MaxHeight, err = parseResolution(o.resolution); err != nil {
+			return err
+		}
+	}
 
 	// Ctrl+C に加え、コンソールの × ボタン（CTRL_CLOSE_EVENT → SIGTERM）でも後片付けする
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -224,7 +237,7 @@ func run(o options) error {
 
 	// WebRTC
 	streamer, err := stream.NewStreamer(lanIP, port, func() *capture.Capturer {
-		return &capture.Capturer{FFmpeg: ff, Encoder: enc, Monitor: currentMonitor(), Params: params}
+		return &capture.Capturer{FFmpeg: ff, Encoder: enc, Monitor: currentMonitor(), Params: params, Resolve: currentMonitor}
 	}, inputHandler)
 	if err != nil {
 		return err
@@ -407,4 +420,13 @@ func enableVT() {
 	if windows.GetConsoleMode(h, &mode) == nil {
 		windows.SetConsoleMode(h, mode|windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING)
 	}
+}
+
+// parseResolution は "1920x1080" 形式の文字列を解析する。
+func parseResolution(s string) (int, int, error) {
+	var w, h int
+	if _, err := fmt.Sscanf(strings.ToLower(strings.TrimSpace(s)), "%dx%d", &w, &h); err != nil || w < 16 || h < 16 {
+		return 0, 0, fmt.Errorf("-resolution は 1920x1080 のように指定してください（%q）", s)
+	}
+	return w, h, nil
 }

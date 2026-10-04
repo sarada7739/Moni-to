@@ -19,6 +19,13 @@ let dc = null; // 操作イベント送信用 DataChannel
 let actionHandler = null;
 let halted = false; // 追い出し・認証エラー後は自動で再接続しない
 let homeTried = false; // mDNS 名への移動はページごとに 1 回だけ試す
+let lastInfo = null; // ホストから届いた配信情報（エンコーダ名など）
+
+// 自動再接続：1 → 2 → 5 秒間隔で、つながるまで繰り返す（映像が流れ始めたら回数を戻す）
+const RETRY_DELAYS = [1000, 2000, 5000];
+let retryCount = 0;
+let retryTimer = 0;
+let disconnectTimer = 0;
 
 // localStorage はプライベートブラウズ等で例外になることがあるので包む
 const store = {
@@ -57,6 +64,8 @@ function credentials() {
 }
 
 function cleanup() {
+  clearTimeout(retryTimer);
+  clearTimeout(disconnectTimer);
   if (ws) {
     ws.onclose = null;
     ws.onmessage = null;
@@ -71,6 +80,21 @@ function cleanup() {
     pc = null;
   }
   video.srcObject = null;
+}
+
+// 接続が切れたときに、少し待ってからつなぎ直す
+function scheduleReconnect(reason) {
+  if (halted) return;
+  cleanup();
+  if (document.visibilityState !== 'visible') {
+    // 画面が隠れている間は試さない（表示されたら visibilitychange でつなぐ）
+    show(reason);
+    return;
+  }
+  const delay = RETRY_DELAYS[Math.min(retryCount, RETRY_DELAYS.length - 1)];
+  retryCount++;
+  show(`${reason}\n再接続中…（${retryCount} 回目）`, '今すぐ再接続', connect);
+  retryTimer = setTimeout(connect, delay);
 }
 
 function connect() {
@@ -93,6 +117,10 @@ function connect() {
   const sock = new WebSocket(url);
   ws = sock;
   let finished = false; // サーバー側で意図的に終了した（エラー・追い出し）
+  let opened = false;
+  sock.onopen = () => {
+    opened = true;
+  };
 
   sock.onmessage = async (ev) => {
     const m = JSON.parse(ev.data);
@@ -108,14 +136,14 @@ function connect() {
           await startPeer(sock);
         } catch (e) {
           console.error(e);
-          show('接続の準備に失敗しました：' + e.message, '再接続', connect);
+          scheduleReconnect('接続の準備に失敗しました：' + e.message);
         }
         break;
       case 'answer':
         if (pc) await pc.setRemoteDescription({ type: 'answer', sdp: m.sdp });
         break;
       case 'info':
-        console.log(`[monito] ${m.encoder} ${m.width}x${m.height}`);
+        lastInfo = m;
         break;
       case 'kicked':
         finished = true;
@@ -142,7 +170,7 @@ function connect() {
   };
   sock.onclose = () => {
     if (ws !== sock || finished) return;
-    show('切断されました。', '再接続', connect);
+    scheduleReconnect(opened ? '接続が切れました。' : 'PC に接続できません（monito が起動しているか確認してください）。');
   };
 }
 
@@ -192,13 +220,30 @@ async function startPeer(sock) {
   }
 
   pc.ontrack = (ev) => {
+    // 受信バッファを最小にする（低遅延優先）。対応していないブラウザでは何もしない
+    try {
+      if ('jitterBufferTarget' in ev.receiver) ev.receiver.jitterBufferTarget = 0;
+      else if ('playoutDelayHint' in ev.receiver) ev.receiver.playoutDelayHint = 0;
+    } catch {
+      /* 無視 */
+    }
     video.srcObject = ev.streams[0] || new MediaStream([ev.track]);
     tryPlay();
   };
+  const peer = pc;
   pc.onconnectionstatechange = () => {
-    const st = pc && pc.connectionState;
-    if (st === 'failed') {
-      show('映像の接続に失敗しました。\n同じ Wi-Fi に接続しているか、PC のファイアウォール設定を確認してください。', '再接続', connect);
+    if (pc !== peer) return;
+    const st = peer.connectionState;
+    if (st === 'connected') {
+      clearTimeout(disconnectTimer);
+    } else if (st === 'disconnected') {
+      // 一時的な途切れは自然に戻ることがあるので 3 秒待つ
+      clearTimeout(disconnectTimer);
+      disconnectTimer = setTimeout(() => {
+        if (pc === peer && peer.connectionState !== 'connected') scheduleReconnect('映像の接続が途切れました。');
+      }, 3000);
+    } else if (st === 'failed') {
+      scheduleReconnect('映像の接続に失敗しました（同じ Wi-Fi か、PC のファイアウォール設定を確認してください）。');
     }
   };
 
@@ -234,10 +279,20 @@ function tryPlay() {
   }
 }
 
-// 操作イベントを送る（接続していないときは捨てる）
-MonitoInput.attach(video, (ev) => {
-  if (dc && dc.readyState === 'open') dc.send(JSON.stringify(ev));
+// 統計オーバーレイ（iPhone は 3 本指タップ、PC は S キーで切り替え）
+const stats = MonitoStats.create(document.getElementById('stats'), () => pc, () => lastInfo);
+document.addEventListener('keydown', (e) => {
+  if ((e.key === 's' || e.key === 'S') && !e.ctrlKey && !e.metaKey && !e.altKey) stats.toggle();
 });
+
+// 操作イベントを送る（接続していないときは捨てる）
+MonitoInput.attach(
+  video,
+  (ev) => {
+    if (dc && dc.readyState === 'open') dc.send(JSON.stringify(ev));
+  },
+  { onThreeFingerTap: () => stats.toggle() }
+);
 
 // 画面の向きをホストへ知らせる（ホストは仮想モニターの縦横を切り替える）
 const portraitQuery = window.matchMedia('(orientation: portrait)');
@@ -259,12 +314,16 @@ function onOrientationChange() {
 portraitQuery.addEventListener('change', onOrientationChange);
 window.addEventListener('resize', onOrientationChange);
 
-// 最初のフレームが表示されたらオーバーレイを消す
-video.addEventListener('playing', hide);
+// 映像が流れ始めたらオーバーレイを消し、再接続の回数を戻す
+video.addEventListener('playing', () => {
+  retryCount = 0;
+  hide();
+});
 
-// 画面スリープ等で WebSocket が切れていたら、復帰時に接続し直す
+// 画面スリープ等で WebSocket が切れていたら、復帰時にすぐ接続し直す
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && !halted && (!ws || ws.readyState === WebSocket.CLOSED) && credentials()) {
+    retryCount = 0;
     connect();
   }
 });

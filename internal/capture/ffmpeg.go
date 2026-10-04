@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"moni-to/internal/display"
+	"moni-to/internal/flv"
 	"moni-to/internal/h264"
 )
 
@@ -23,6 +24,10 @@ type Capturer struct {
 	Monitor  display.Monitor
 	Params   Params
 	OnSample SampleFunc
+
+	// Resolve は FFmpeg の起動ごとに対象モニターの最新情報を返す（nil なら Monitor を使う）。
+	// 自動回転で解像度が変わっても、出力サイズを追従させるため。
+	Resolve func() display.Monitor
 
 	mu          sync.Mutex
 	cancelProc  context.CancelFunc // 実行中プロセスを止める
@@ -76,7 +81,16 @@ func (c *Capturer) runOnce(ctx context.Context) (frames int, err error) {
 	pctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	cmd := exec.CommandContext(pctx, c.FFmpeg, buildArgs(c.Encoder, c.Monitor, c.Params, 0)...)
+	mon := c.Monitor
+	if c.Resolve != nil {
+		mon = c.Resolve()
+	}
+	params := c.Params.Resolve(mon)
+	ow, oh := params.OutputSize(mon)
+	log.Printf("[capture] FFmpeg 起動: %s %dx%d → 出力 %dx%d, %dfps, %dkbps",
+		c.Encoder.Name, mon.Width(), mon.Height(), ow, oh, params.FPS, params.BitrateKbps)
+
+	cmd := exec.CommandContext(pctx, c.FFmpeg, buildArgs(c.Encoder, mon, params, 0)...)
 	cmd.Stderr = &lineLogger{prefix: "[ffmpeg] "}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -97,17 +111,15 @@ func (c *Capturer) runOnce(ctx context.Context) (frames int, err error) {
 		c.mu.Unlock()
 	}()
 
-	nr := h264.NewNALReader(stdout)
-	var asm h264.Assembler
+	fr := flv.NewReader(stdout)
 	waitKey := true
 	for {
-		nal, rerr := nr.Next()
+		au, rerr := fr.Next()
 		if rerr != nil {
+			if rerr != io.EOF && pctx.Err() == nil {
+				log.Printf("[capture] 出力の解析に失敗しました: %v", rerr)
+			}
 			break
-		}
-		au := asm.Push(nal)
-		if au == nil {
-			continue
 		}
 		// 再起動直後などはキーフレームが来るまで捨てる
 		if waitKey && !au.Keyframe {

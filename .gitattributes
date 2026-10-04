@@ -1,0 +1,11 @@
+# 改行コードを PC ごとの設定に左右されないようにする
+* text=auto eol=lf
+
+# Windows の PowerShell / バッチは CRLF
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# バイナリ
+*.png binary
+*.exe binary

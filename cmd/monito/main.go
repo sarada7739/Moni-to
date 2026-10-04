@@ -147,6 +147,9 @@ func run(o options) error {
 		return err
 	}
 	log.Printf("FFmpeg: %s", ff)
+	if err := capture.CheckFFmpeg(ff); err != nil {
+		return err
+	}
 
 	// モニター（省略時・virtual 指定時は、切断中の仮想ディスプレイを先に接続する）
 	if o.monitor == "" || isVirtualSpec(o.monitor) {

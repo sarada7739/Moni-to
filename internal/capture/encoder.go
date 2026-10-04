@@ -193,6 +193,31 @@ func FindFFmpeg(override string) (string, error) {
 		"  ・または -ffmpeg フラグで ffmpeg.exe のパスを直接指定できます。")
 }
 
+// CheckFFmpeg は FFmpeg に必要な機能（ddagrab と scale_d3d11、FFmpeg 8.0 以降）があるかを確かめる。
+// 古い FFmpeg だとエンコーダ確認の段階で分かりにくいエラーになるため、先に理由を示す。
+func CheckFFmpeg(ffmpeg string) error {
+	out, err := exec.Command(ffmpeg, "-hide_banner", "-filters").Output()
+	if err != nil {
+		return fmt.Errorf("FFmpeg を実行できません（%s）: %w", ffmpeg, err)
+	}
+	var missing []string
+	for _, f := range []string{"ddagrab", "scale_d3d11"} {
+		if !bytes.Contains(out, []byte(" "+f+" ")) {
+			missing = append(missing, f)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	ver := "不明"
+	if v, err := exec.Command(ffmpeg, "-hide_banner", "-version").Output(); err == nil {
+		ver = firstLine(strings.TrimSpace(string(v)))
+	}
+	return fmt.Errorf("この FFmpeg には必要な機能（%s）がありません。FFmpeg 8.0 以降の Windows 向けビルドを使ってください。\n"+
+		"  ・使用中: %s（%s）\n"+
+		"  ・インストール例: winget install Gyan.FFmpeg", strings.Join(missing, ", "), ffmpeg, ver)
+}
+
 // buildArgs は FFmpeg のコマンドライン引数を組み立てる。
 // probeFrames > 0 のときは指定フレーム数だけエンコードして破棄する（動作確認用）。
 func buildArgs(enc Encoder, mon display.Monitor, p Params, probeFrames int) []string {

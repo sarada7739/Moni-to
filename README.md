@@ -9,12 +9,31 @@ iPhone は標準カメラで QR コードを読み取るだけで接続できま
 
 | 対象 | 必要なもの |
 |---|---|
-| ホスト PC | Windows 10/11、**FFmpeg**（`ddagrab` を含むビルド。FFmpeg 6.1 以降） |
-| ビルドする場合のみ | Go 1.27 以降 |
+| ホスト PC | Windows 10/11（64bit）、**FFmpeg 8.0 以降**（`ddagrab` と `scale_d3d11` を含む Windows 向けビルド） |
+| ビルドする場合のみ | Go 1.27 以降、Git |
+| 拡張ディスプレイにする場合 | [Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver)（後述） |
 | 視聴側 | iPhone の Safari（同じ PC の Chrome / Edge でも確認可） |
 
 FFmpeg は次の順で探します：`-ffmpeg` で指定したパス → `monito.exe` と同じフォルダの `ffmpeg.exe` → PATH。
-見つからない場合はエラーメッセージで案内します（例：`winget install Gyan.FFmpeg`）。
+見つからない場合や、古くて必要な機能が無い場合は、起動時にエラーメッセージで案内します。
+
+## 別の PC で構築する
+
+```powershell
+winget install --id GoLang.Go -e          # Go（未インストールの場合）
+winget install --id Gyan.FFmpeg -e        # FFmpeg 8.0 以降
+# ↑ インストール後はターミナルを開き直す（PATH を反映するため）
+git clone https://github.com/sarada7739/Moni-to.git
+cd Moni-to
+go build -o monito.exe ./cmd/monito
+.\monito.exe
+```
+
+- 動作確認：`go vet ./...` と `go test ./...` が通り、`.\monito.exe -list-monitors` でモニター一覧が出れば OK です。
+- **Windows Defender が monito.exe を誤検知することがあります**（署名のない自作 exe のため）。隔離された場合は、Windows セキュリティの「保護の履歴」から復元するか、ビルドしたフォルダを除外に追加してください。
+- **ファイアウォール**：初回起動時の確認で許可してください。ネットワークが「パブリック」扱いの PC では、パブリックも許可しないと iPhone から接続できません。
+- iPhone から接続するには、PC と iPhone が同じルーター（同じ LAN）につながっている必要があります（ゲスト Wi-Fi や AP アイソレーションでは不可）。
+- AI（Claude Code など）に構築を任せる場合は、リポジトリ直下の `CLAUDE.md` を読ませてください。
 
 ## ビルド
 
@@ -42,7 +61,8 @@ PowerShell の場合：
 
 1. 起動すると LAN IP の候補・モニター一覧・使用エンコーダが表示され、ターミナルに QR コードが出ます。
 2. iPhone の標準カメラで QR を読み取り、表示されたリンクを開くと画面が映ります。
-3. 初回起動時に Windows ファイアウォールの確認が出たら **「プライベート ネットワーク」を許可**してください（TCP/UDP とも同じポートを使います）。
+3. 初回起動時に Windows ファイアウォールの確認が出たら許可してください（TCP/UDP とも同じポートを使います）。
+   ネットワークが「パブリック」扱いになっている場合は、パブリックも許可が必要です。
 
 ### PC のブラウザで確認する
 
